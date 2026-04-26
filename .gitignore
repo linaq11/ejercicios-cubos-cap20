@@ -1,0 +1,10 @@
+data_heavy/
+*.nc
+*.zip
+.cdsapirc
+ejercicios_cubos_1_cache/
+ejercicios_cubos_1_files/
+_freeze/
+.quarto/
+__pycache__/
+.venv/
