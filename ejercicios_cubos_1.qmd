@@ -2,7 +2,7 @@
 title: "Cubos Multidimensionales: pipeline perezoso sobre ERA5-Land en la CGSM"
 subtitle: "Ejercicios 1 y 2 — Capítulo 20"
 author: Lina María Quintero Fonseca
- 
+  
 date: "2026-04-25"
 format:
   html:
@@ -45,37 +45,66 @@ lang: es
 ```{r setup-engines}
 #| include: false
 
-# Configuración global de knitr
+# Configuracion global de knitr
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>",
   fig.align = "center"
 )
 
-# Carga condicional de los puentes inter-lenguaje. Si el contenedor del
-# curso configuró engines nativos de Quarto para Python y Julia (jupyter
-# o el engine julia de QuartoNotebookRunner), estos paquetes no son
-# necesarios; el bloque tryCatch evita que la ausencia de cualquiera
-# rompa el render.
-tryCatch(
-  {
-    library(reticulate)
-  },
-  error = function(e) message("reticulate no cargado: ", e$message)
+# Puente Python via reticulate
+library(reticulate)
+
+# Funciones helper del profesor (j_eval, j_plot, .j_render_output)
+source("/home/rstudio/work/j_eval_j_plot.r")
+
+# Verificar JuliaConnectoR
+if (!requireNamespace("JuliaConnectoR", quietly = TRUE)) {
+  install.packages("JuliaConnectoR", repos = "https://cloud.r-project.org")
+}
+library(JuliaConnectoR)
+
+if (!juliaSetupOk()) {
+  stop("JuliaConnectoR no detecta Julia. Verifica $JULIA_BINDIR.")
+}
+
+# Pre-cargar paquetes Julia mediante juliaImport (top-level real)
+JuliaConnectoR::juliaImport("Rasters", all = FALSE)
+JuliaConnectoR::juliaImport("NCDatasets", all = FALSE)
+JuliaConnectoR::juliaImport("Dates", all = FALSE)
+JuliaConnectoR::juliaImport("Statistics", all = FALSE)
+JuliaConnectoR::juliaImport("ArchGDAL", all = FALSE)
+
+# Inyectar 'using' en Main para los nombres sin prefijo
+JuliaConnectoR::juliaCall(
+  "Core.eval",
+  JuliaConnectoR::juliaExpr("Main"),
+  JuliaConnectoR::juliaExpr("quote
+    using Rasters
+    using NCDatasets
+    using Dates
+    using Statistics
+    using ArchGDAL
+  end")
 )
 
-tryCatch(
-  {
-    # library(JuliaCall) omitido
-    # julia_setup omitido: contenedor maneja Julia nativamente
-  },
-  error = function(e) message("JuliaCall no cargado: ", e$message)
+# Definir _unal_core_executor desde un archivo .jl externo (sin
+# escapes de comillas frgiles). Este archivo contiene la version
+# compatible con Julia 1.11.3 (sin rama is_plot, con Pipe en lugar de
+# IOBuffer para redirect_stdio).
+JuliaConnectoR::juliaCall(
+  "include",
+  "/home/rstudio/work/Carpeta-curso/_unal_executor.jl"
 )
+
+# Sobrescribir .ensure_julia_ready del profesor con una funcion vacia
+# (ya hicimos toda la inicializacion arriba)
+.ensure_julia_ready <- function() invisible(TRUE)
 ```
 
 # Introducción
 
-El presente documento materializa la solución a los Ejercicios 1 y 2 del
+En el presente documento se desarrollan los Ejercicios del
 capítulo 20 del curso de Programación en SIG, los cuales abordan la
 adquisición de datos de reanálisis climático y el procesamiento de un
 hipercubo NetCDF mediante evaluación perezosa. El área de estudio
@@ -87,7 +116,7 @@ el mes de enero de 2024 con resolución horaria, parámetro suficiente para
 ilustrar las operaciones de remuestreo, álgebra de mapas y reproyección
 sin saturar la memoria del equipo local.
 
-Con el ánimo de comparar paradigmas de gestión de memoria, el pipeline
+Con el fin de comparar paradigmas de gestión de memoria, el pipeline
 se implementó de forma paralela en los tres lenguajes del curso:
 Python con `xarray` y `rioxarray`, R con `stars`, y Julia con `Rasters.jl`.
 Cabe señalar que cada implementación recae sobre el mismo archivo NetCDF
@@ -156,9 +185,6 @@ else:
     cliente.retrieve("reanalysis-era5-land", solicitud).download(archivo_nc)
 ```
 
-El archivo resultante pesa aproximadamente 30 a 40 MB, magnitud que se
-ubica con holgura por debajo del umbral de 500 MB sugerido en el
-enunciado y que permite el procesamiento ágil sobre equipos personales.
 
 ## Verificación del archivo descargado
 
@@ -265,12 +291,10 @@ if (is.na(st_crs(y))) {
 
 ### Julia 🟣
 
-```{julia jl-lectura}
-#| eval: false
-using Rasters
-using NCDatasets
-using Dates
-using Statistics
+```{r jl-lectura}
+#| results: asis
+
+j_eval('
 
 archivo = "./data_heavy/era5land_cgsm_t2m_ene2024.nc"
 
@@ -283,11 +307,12 @@ println("\n=== DIMENSIONES ===")
 println(dims(cubo))
 println("\n=== CRS ===")
 println(crs(cubo))
+')
 ```
 
 :::
 
-La auditoría revela tres dimensiones —tiempo, latitud y longitud— y una
+Se evidencian tres dimensiones —tiempo, latitud y longitud— y una
 variable principal `t2m` cuyas unidades nativas son Kelvin. El sistema
 de referencia es WGS 84 (EPSG:4326) y la grilla horaria contiene 744
 láminas (24 h × 31 días).
@@ -341,8 +366,10 @@ print(t2m_c)
 
 ### Julia 🟣
 
-```{julia jl-celsius}
-#| eval: false
+```{r jl-celsius}
+#| results: asis
+
+j_eval('
 # Broadcast con punto: aplica la resta a cada elemento sin colapsar memoria
 nombre_var = first(keys(cubo))
 t2m_c = cubo[nombre_var] .- 273.15
@@ -350,13 +377,14 @@ t2m_c = cubo[nombre_var] .- 273.15
 println("Unidades originales: K  →  derivadas: °C")
 println(typeof(t2m_c))
 println(size(t2m_c))
+')
 ```
 
 :::
 
 ## Inspección de la resolución temporal
 
-Antes de proceder al remuestreo, resulta pertinente auditar el paso
+Antes de proceder al remuestreo, resulta pertinente verificar el paso
 temporal real del archivo descargado, dado que esta verificación
 condiciona la regla de agregación que se aplicará en el siguiente
 paso. Una mala lectura del paso de tiempo —por ejemplo, asumir
@@ -392,21 +420,24 @@ cat("Fin:   ", format(max(fechas)), "\n")
 
 ### Julia 🟣
 
-```{julia jl-paso-temporal}
-#| eval: false
+```{r jl-paso-temporal}
+#| results: asis
+
+j_eval('
 tiempos = lookup(cubo, Ti)
 delta_t = tiempos[2] - tiempos[1]
 println("Resolución temporal detectada: ", delta_t)
 println("Total de láminas: ", length(tiempos))
 println("Inicio: ", first(tiempos))
 println("Fin:    ", last(tiempos))
+')
 ```
 
 :::
 
 ## Remuestreo temporal: de horario a diario
 
-Toda vez que la resolución nativa es horaria —744 láminas para enero de
+Dado que la resolución nativa es horaria —744 láminas para enero de
 2024—, el primer paso de reducción consiste en agrupar las 24 láminas
 diarias y aplicar una función estadística de cierre. Para temperatura,
 el promedio diario constituye la métrica más representativa, en la
@@ -428,11 +459,11 @@ print(t2m_diaria)
 ```
 
 ```{python py-diaria-plot}
-#| fig-cap: "Evolución de la temperatura media diaria en un punto representativo de la CGSM (11.00° N, −74.20° W) durante enero de 2024. La serie evidencia la variabilidad sinóptica filtrada del ciclo diurno tras el remuestreo."
+#| fig-cap: "Evolución de la temperatura media diaria en un punto representativo de la CGSM (10.85° N, −74.40° W) durante enero de 2024. La serie evidencia la variabilidad sinóptica filtrada del ciclo diurno tras el remuestreo."
 import matplotlib.pyplot as plt
 
 # Selección puntual cercana al centroide de la CGSM
-serie = t2m_diaria.sel(latitude=11.0, longitude=-74.2, method="nearest")
+serie = t2m_diaria.sel(latitude=10.85, longitude=-74.40, method="nearest")
 
 fig, ax = plt.subplots(figsize=(10, 4))
 serie.plot(marker="o", color="firebrick", ax=ax)
@@ -456,9 +487,11 @@ print(t2m_diaria)
 
 ### Julia 🟣
 
-```{julia jl-diaria}
-#| eval: false
-# En Julia el remuestreo se controla
+```{r jl-diaria}
+#| results: asis
+
+j_eval('
+# Dado que en Julia el remuestreo se controla
 # por el NÚMERO DE PASOS por bloque, no por una etiqueta de período
 # como en Python o R. Para datos horarios el factor es 24; para
 # trihorarios sería 8. Se calcula explícitamente a partir del paso
@@ -473,19 +506,19 @@ t2m_diaria = Rasters.aggregate(mean, t2m_c, Ti => factor_diario)
 
 println("Láminas diarias: ", size(t2m_diaria, Ti))
 println(t2m_diaria)
+')
 ```
 
 :::
 
 ## Máxima mensual y fecha de ocurrencia
 
-El siguiente paso responde literalmente al numeral 5 del enunciado:
+El siguiente paso responde al numeral 5:
 calcular, para cada píxel, el valor máximo del mes y registrar la fecha
 en la que dicho máximo se presentó. La lógica computacional combina dos
 operaciones de reducción que actúan sobre la misma dimensión temporal —
 `max` para el valor y `argmax/idxmax` para el índice—, las cuales se
-exponen en cada lenguaje mediante una sintaxis ligeramente diferente
-pero conceptualmente equivalente.
+exponen en cada lenguaje.
 
 ::: {.panel-tabset}
 
@@ -511,7 +544,7 @@ fecha_max.attrs["long_name"] = "Fecha de la temperatura máxima diaria"
 t_max = t_max.squeeze(drop=True)
 fecha_max = fecha_max.squeeze(drop=True)
 
-# Empaquetado en un Dataset con dos variables
+# Dataset con dos variables
 ds_resumen = xr.Dataset({"t2m_max": t_max, "fecha_max": fecha_max})
 print(ds_resumen)
 ```
@@ -569,8 +602,10 @@ print(resumen)
 
 ### Julia 🟣
 
-```{julia jl-maxima}
-#| eval: false
+```{r jl-maxima}
+#| results: asis
+
+j_eval('
 # Reducción a lo largo del eje temporal
 t_max = maximum(t2m_diaria; dims = Ti)
 t_max = dropdims(t_max; dims = Ti)
@@ -583,6 +618,7 @@ fecha_max = dropdims(fecha_max; dims = Ti)
 
 println("Máximo mensual: ", size(t_max))
 println("Fecha de ocurrencia: ", size(fecha_max))
+')
 ```
 
 :::
@@ -611,29 +647,27 @@ interpolación bilineal por tratarse de una variable continua.
 ### Python 🐍
 
 ```{python py-warp}
-# Asignacion explicita del CRS de origen
+# Asignación explícita del CRS de origen — buena práctica defensiva
 ds_resumen.rio.write_crs("EPSG:4326", inplace=True)
 
-# rioxarray/GDAL no sabe reproyectar tipos datetime64; convertimos
-# fecha_max a numero de dia del mes (1-31) antes del warping. Esto
-# preserva la informacion temporal y la hace compatible con la
-# interpolacion vecino-mas-cercano sobre la nueva grilla metrica.
+# Reproyección bilineal: solo la variable continua se interpola.
+# fecha_max debe transformarse mediante vecino más cercano para
+# preservar la integridad del tipo datetime.
+t2m_max_proy = ds_resumen["t2m_max"].rio.reproject(
+    "EPSG:9377", resampling=1   # 1 = bilineal
+)
+# rioxarray no reproyecta datetime64; convertimos fecha_max a numero
+# de dia del mes (1-31) antes del warping con vecino mas cercano.
 import numpy as np
 dia_max_da = ((ds_resumen["fecha_max"].values.astype("datetime64[D]")
                - np.datetime64("2024-01-01")).astype(int) + 1)
 ds_resumen["dia_max"] = (ds_resumen["fecha_max"].dims, dia_max_da)
 ds_resumen["dia_max"].attrs["units"] = "dia del mes"
-ds_resumen["dia_max"].attrs["long_name"] = "Dia de enero del maximo"
 
-# Reproyeccion: bilineal para temperatura (continua), vecino mas
-# cercano para el dia (entero categorico).
-t2m_max_proy = ds_resumen["t2m_max"].rio.reproject(
-    "EPSG:9377", resampling=1   # 1 = bilineal
-)
 dia_max_proy = ds_resumen["dia_max"].rio.reproject(
     "EPSG:9377", resampling=0   # 0 = nearest
 )
-fecha_max_proy = dia_max_proy  # alias por compatibilidad
+fecha_max_proy = dia_max_proy
 
 print("CRS final:", t2m_max_proy.rio.crs)
 print(t2m_max_proy)
@@ -657,8 +691,9 @@ plt.show()
 # Asignacion defensiva del CRS de origen
 st_crs(resumen) <- 4326
 
-# st_warp procesa un atributo a la vez. Reproyectamos cada variable
-# por separado y luego las combinamos en un solo objeto stars.
+# st_warp con use_gdal exige una sola banda por llamada cuando los
+# atributos tienen tipos distintos. Reproyectamos cada variable por
+# separado y luego las unimos en el mismo objeto stars.
 t_max_proy <- st_warp(resumen["t2m_max"],
                       crs = st_crs(9377),
                       method = "bilinear",
@@ -675,9 +710,10 @@ print(resumen_proy)
 
 ### Julia 🟣
 
-```{julia jl-warp}
-#| eval: false
-using ArchGDAL
+```{r jl-warp}
+#| results: asis
+
+j_eval('
 
 # Resample con CRS de destino aplicado a la temperatura
 t_max_proy = resample(t_max;
@@ -686,6 +722,7 @@ t_max_proy = resample(t_max;
 
 println("CRS final: ", crs(t_max_proy))
 println(size(t_max_proy))
+')
 ```
 
 :::
@@ -702,15 +739,14 @@ final se denomina `mi_zona_procesada.nc`.
 ### Python 🐍
 
 ```{python py-write}
-# Reensamblaje de las dos variables ya proyectadas: la temperatura
-# maxima en grados Celsius y el dia del mes en que ocurrio cada maximo.
+# Reensamblaje de las dos variables ya proyectadas
 import xarray as xr
 ds_proyectado = xr.Dataset({
     "t2m_max": t2m_max_proy,
     "dia_max": dia_max_proy,
 })
 
-# Materialización explícita: si quedan tareas Dask diferidas, .compute()
+# Si quedan tareas Dask diferidas, .compute()
 # las ejecuta y deja el resultado en RAM. Exportar directamente un grafo
 # sin materializar es desaconsejable porque el motor de escritura puede
 # saturar la memoria al recorrer el cubo lámina por lámina.
@@ -733,7 +769,8 @@ print(f"Tamaño: {os.path.getsize(salida) / 1024:.2f} KB")
 ```{r r-write}
 # Materialización explícita del proxy mediante st_as_stars(): convierte
 # la lista de operaciones diferidas en un objeto stars residente en RAM.
-# Exportar directamente un proxy sin materializar puede saturar la memoria al recorrer el cubo.
+# El profesor enfatizó este paso en clase: exportar directamente un
+# proxy sin materializar puede saturar la memoria al recorrer el cubo.
 resumen_proy_mem <- st_as_stars(resumen_proy)
 
 salida <- "./data_heavy/mi_zona_procesada_R.nc"
@@ -745,70 +782,19 @@ cat("Tamaño:", round(file.info(salida)$size / 1024, 2), "KB\n")
 
 ### Julia 🟣
 
-```{julia jl-write}
-#| eval: false
+```{r jl-write}
+#| results: asis
+
+j_eval('
 salida = "./data_heavy/mi_zona_procesada_julia.nc"
 isfile(salida) && rm(salida)
 write(salida, t_max_proy)
 println("Cubo persistido en: ", salida)
+')
 ```
 
 :::
 
-# Resumen sintáctico del pipeline
-
-La siguiente tabla sintetiza, para cada lenguaje, las funciones
-empleadas en cada paso del pipeline. Esta comparación recoge los
-puntos enfatizados en clase respecto al manejo de proxy/lazy, la
-orientación de las dimensiones y los factores de agregación.
-
-| Operación | Python 🐍 | R 🔵 | Julia 🟣 |
-|---|---|---|---|
-| Lectura perezosa | `xr.open_dataset(f, chunks="auto")` | `read_stars(f, proxy=TRUE)` | `RasterStack(f; lazy=true)` |
-| Asignación de CRS | `.rio.write_crs("EPSG:4326")` | `st_crs(y) <- 4326` | Automático vía CF |
-| Paso temporal | `ds.time.diff(...)` | `difftime(t2, t1)` | `t[2] - t[1]` |
-| Álgebra escalar | `ds - 273.15` | `obj - 273.15` | `cubo .- 273.15` |
-| Remuestreo diario | `.resample({dim: "1D"}).mean()` | `aggregate(by="days", FUN=mean)` | `aggregate(mean, obj, Ti => N)` |
-| Reducción (máx) | `.max(dim="time")` | `st_apply(obj, c("x","y"), max)` | `maximum(obj; dims=Ti)` |
-| Índice del máx | `.idxmax(dim="time")` | `which.max()` + `lookup` | `argmax(obj; dims=Ti)` |
-| Eliminar dim unitaria | `.squeeze(drop=True)` | `adrop()` | `dropdims(...; dims=N)` |
-| Reproyección bilineal | `.rio.reproject("EPSG:9377", resampling=1)` | `st_warp(crs=9377, method="bilinear")` | `resample(crs=EPSG(9377))` |
-| Materialización | `.compute()` | `st_as_stars()` | Implícita en `read` |
-| Exportación | `.to_netcdf(f)` | `write_mdim(obj, f)` | `write(f, obj)` |
-
-Notas sobre el desempeño:
-
-- **Python** combina `xarray + Dask` mediante `chunks="auto"`, lo que requiere `netCDF4` y `dask` instalados; sin `chunks` la lectura cae en evaluación perezosa nativa de xarray pero pierde el paralelismo automático.
-- **R** acumula operaciones en un objeto `proxy` cuya cadena de instrucciones se materializa al invocar `st_as_stars()`. Materializar prematuramente sobre un cubo grande satura la RAM; postergarlo hasta el último paso —después de los filtros y reducciones— constituye la regla de seguridad fundamental.
-- **Julia** opera bajo el paradigma `DiskArrays`, en el cual la reducción de dimensiones se controla por el **número de pasos por bloque** y no por etiquetas de período. De ahí la necesidad de calcular el factor de agregación —24 pasos por día para datos horarios, 8 para trihorarios— a partir de la inspección del paso temporal nativo.
-
-# Preguntas analíticas
-
-## Sobre evaluación perezosa: ¿qué pasa si reproyectamos antes de remuestrear?
-
-Si se omitiera el paso de remuestreo temporal a medias diarias y se
-procediera a reproyectar el cubo horario completo —744 láminas
-espaciales para enero de 2024— a EPSG:9377, las consecuencias
-computacionales serían notables tanto en consumo de memoria como en
-tiempos de ejecución. La reproyección, conocida como *warping*,
-constituye una operación que rompe la lógica perezosa por dos motivos
-concurrentes: en primer lugar, requiere recalcular la posición y el
-valor de cada píxel en una nueva malla matemática mediante
-interpolación, lo que obliga al motor —GDAL en los tres lenguajes— a
-acceder a bloques contiguos del raster original; en segundo lugar, el
-cómputo de los pesos de interpolación bilineal exige tener disponibles
-los píxeles vecinos, de manera que la fragmentación tipo Dask o
-DiskArrays pierde eficiencia y termina materializando porciones
-considerables del cubo en RAM.
-
-Bajo este escenario, la reproyección se ejecutaría 24 veces para cada
-día —una vez por cada lámina horaria—, multiplicando el costo
-computacional por un factor cercano a 24 con respecto al pipeline
-correcto. En equipos con memoria limitada —el caso típico de un
-estudiante— este flujo invertido puede llegar a desbordar la RAM y
-detonar errores de tipo `MemoryError` o, peor aún, provocar que el
-sistema operativo recurra a memoria de intercambio en disco con la
-consecuente degradación drástica del rendimiento. En contraste, al
 reducir primero la dimensión temporal mediante el remuestreo a medias
 diarias, el número de láminas a reproyectar se contrae de 744 a 31, lo
 que reduce el costo de warping en un orden de magnitud.
@@ -859,7 +845,7 @@ responsabilidad de manera transparente.
 
 # Conclusiones
 
-El ejercicio puso de manifiesto la importancia de ordenar las
+El ejercicio muestra la importancia de ordenar las
 operaciones de un pipeline multidimensional de modo que la
 materialización en memoria se postergue hasta el último paso posible,
 así como la conveniencia de filtrar y agregar antes de reproyectar.
@@ -873,29 +859,3 @@ exportable, la interoperabilidad queda garantizada y la decisión sobre
 qué stack adoptar puede tomarse con base en la familiaridad del equipo,
 la disponibilidad de librerías especializadas y los requerimientos de
 desempeño del proyecto.
-
-# Referencias
-
-Hersbach, H., Bell, B., Berrisford, P., Hirahara, S., Horányi, A.,
-Muñoz-Sabater, J., Nicolas, J., Peubey, C., Radu, R., Schepers, D.,
-Simmons, A., Soci, C., Abdalla, S., Abellan, X., Balsamo, G., Bechtold,
-P., Biavati, G., Bidlot, J., Bonavita, M., De Chiara, G., Dahlgren, P.,
-Dee, D., Diamantakis, M., Dragani, R., Flemming, J., Forbes, R., Fuentes,
-M., Geer, A., Haimberger, L., Healy, S., Hogan, R. J., Hólm, E.,
-Janisková, M., Keeley, S., Laloyaux, P., Lopez, P., Lupu, C., Radnoti,
-G., de Rosnay, P., Rozum, I., Vamborg, F., Villaume, S. y Thépaut, J.-N.
-(2020). The ERA5 global reanalysis. *Quarterly Journal of the Royal
-Meteorological Society*, 146(730), 1999–2049.
-https://doi.org/10.1002/qj.3803
-
-Muñoz-Sabater, J., Dutra, E., Agustí-Panareda, A., Albergel, C.,
-Arduini, G., Balsamo, G., Boussetta, S., Choulga, M., Harrigan, S.,
-Hersbach, H., Martens, B., Miralles, D. G., Piles, M., Rodríguez-Fernández,
-N. J., Zsoter, E., Buontempo, C. y Thépaut, J.-N. (2021). ERA5-Land: a
-state-of-the-art global reanalysis dataset for land applications. *Earth
-System Science Data*, 13(9), 4349–4383.
-https://doi.org/10.5194/essd-13-4349-2021
-
-Rodríguez-Avellaneda, A. H. (2026). *Programación SIG: Python, R y
-Julia*. Capítulo 20 — Cubos Multidimensionales. Universidad Nacional de
-Colombia.
